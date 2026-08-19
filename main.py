@@ -14,7 +14,7 @@ MAP_EXPOSURE_US	= 270
 MAP_AUTO_GAIN	  = False
 MAP_GAIN_DB		= 0
 MAP_AUTO_WHITEBAL  = False
-MAP_REGION =(198, 102, 219, 283)
+MAP_REGION = (204, 108, 218, 283)
 MAP_ROWS = 16
 MAP_COLS = 12
 MAP_CROP_BORDER = 2
@@ -49,7 +49,7 @@ _digit_labels = None
 _box_net = None
 _box_labels = None
 _pic_index = 0
-cx_smooth, cy_smooth = 0, 0    # 位置平滑上次值
+cx_smooth, cy_smooth = 0, 0
 def _init_camera():
     sensor.reset()
     sensor.set_pixformat(sensor.RGB565)
@@ -261,7 +261,6 @@ def locate_car():
     blue_light.on()
     clock = time.clock()
     clock.tick()
-    # 连续拍多帧，取中值 + 低通
     cx_buffer = []
     cy_buffer = []
     for _ in range(POS_HISTORY_LEN):
@@ -276,7 +275,6 @@ def locate_car():
         sorted_cy = sorted(cy_buffer)
         cx_med = sorted_cx[len(sorted_cx) // 2]
         cy_med = sorted_cy[len(sorted_cy) // 2]
-        # 低通滤波
         global cx_smooth, cy_smooth
         if cx_smooth == 0 and cy_smooth == 0:
             cx_smooth, cy_smooth = cx_med, cy_med
@@ -286,18 +284,18 @@ def locate_car():
             cy_smooth = (SMOOTH_A_NUM * cy_med +
                          (SMOOTH_A_DEN - SMOOTH_A_NUM) * cy_smooth) // SMOOTH_A_DEN
         map_x, map_y, map_w, map_h = MAP_REGION
-        adj_x = (map_x + map_w) - cx_smooth  # 距右边界
+        adj_x = (map_x + map_w) - cx_smooth
         adj_y = cy_smooth - map_y
         real_x = int(round(adj_x * MAP_COLS * 20.0 / map_w))
         real_y = int(round(adj_y * MAP_ROWS * 20.0 / map_h))
-        msg = "A0X{:d}Y{:d}".format(real_x, real_y)
+        msg = "X{:d}Y{:d}A".format(real_x, real_y)
         print("Located: %s  (pixel=%d,%d)" % (msg, adj_x, adj_y))
         green_light.toggle()
         blue_light.off()
         return bytes(msg, 'utf-8')
     else:
-        msg = "A0X0Y0"
-        print("Located: Not Found (A0X0Y0)")
+        msg = "X0Y0A"
+        print("Located: Not Found (X0Y0A)")
         blue_light.off()
         return bytes(msg, 'utf-8')
 print("Unified OpenART Ready.")
