@@ -1079,8 +1079,8 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
             }
         }
     }
-    
-    // 检查是否所有目标都已完成
+
+		// 检查是否所有目标都已完成
     uint8_t all_matched = 1;
     for (int t = 0; t < target_count; t++) {
         if (!target_matched[t]) {
@@ -1095,7 +1095,7 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
         mq->found = 1;
         return 1;
     }
-    
+		
     return 0;
 }
 
