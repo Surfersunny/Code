@@ -334,8 +334,8 @@ void return_to_start_zone(void) {
 												float err_x = vision_x - realtime_px;
 
 												float distx = fabsf(err_x) * 10.0f;
-												if (err_x > 0) motion_translate(&motion, distx, UP);
-												else           motion_translate(&motion, distx, DOWN);
+												if (err_x > 0) motion_translate(&motion, 0.0f, UP);
+												else           motion_translate(&motion, 0.0f, DOWN);
 											
 												correction_x = 0;
 										}
@@ -345,8 +345,8 @@ void return_to_start_zone(void) {
 												float err_y = vision_y - realtime_py;
 
 												float disty = fabsf(err_y) * 10.0f;
-												if (err_y > 0) motion_translate(&motion, disty, LEFT);
-												else           motion_translate(&motion, disty, RIGHT);
+												if (err_y > 0) motion_translate(&motion, 0.0f, LEFT);
+												else           motion_translate(&motion, 0.0f, RIGHT);
 											
 												correction_y = 0;
 										}
