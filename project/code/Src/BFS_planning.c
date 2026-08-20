@@ -414,21 +414,33 @@ void bfs_add_recog_cmd(BFS_MotionQueue_t *mq, uint8_t phase, uint8_t idx) {
     cmd->idx = idx;
 }
 
-// ========== 回到起点 ==========
+// ========== 回到起点（此时已推完等效空地图！直接最简单曼哈顿路径） ==========
 uint8_t bfs_return_to_start(BFS_MotionQueue_t *mq, int8_t cur_px, int8_t cur_py) {
     if (cur_px == origin_px && cur_py == origin_py) return 1;
-    
-    int8_t actions[ROWS * COLS];
-    int action_len = 0;
-    
-    if (bfs_find_path(cur_px, cur_py, origin_px, origin_py, actions, &action_len)) {
-        for (int i = 0; i < action_len; i++) {
-            bfs_add_move_cmd(mq, actions[i]);
+
+    // 先沿行方向移动（x 轴）
+    while (cur_px != origin_px) {
+        if (cur_px < origin_px) {
+            bfs_add_move_cmd(mq, DOWN);   // 行号增加，向下
+            cur_px++;
+        } else {
+            bfs_add_move_cmd(mq, UP);     // 行号减少，向上
+            cur_px--;
         }
-        return 1;
     }
-    
-    return 0;
+
+    // 再沿列方向移动（y 轴）
+    while (cur_py != origin_py) {
+        if (cur_py < origin_py) {
+            bfs_add_move_cmd(mq, RIGHT);  // 列号增加，向右
+            cur_py++;
+        } else {
+            bfs_add_move_cmd(mq, LEFT);   // 列号减少，向左
+            cur_py--;
+        }
+    }
+
+    return 1;
 }
 
 // ========== 获取旋转角度 ==========
@@ -1185,9 +1197,9 @@ void bfs_load_map(uint8_t data[ROWS][COLS]) {
     
     for (int i = 0; i < ROWS; i++) {
         for (int j = 0; j < COLS; j++) {
-            if (i == 4 && j == 1) {
+            if (i == 6 && j == 2) {
                 origin_px = i;
-                origin_py = j;
+                origin_py = j;  // 硬编码实际起点为（6，2） 因为出发车区才会刷新出地图 （6，2）确保离开了发车区
             } else if (data[i][j] == CELL_BOX && box_count < MAX_BOX) {
                 box_x[box_count] = i;
                 box_y[box_count] = j;

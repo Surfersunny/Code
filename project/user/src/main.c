@@ -242,13 +242,13 @@ void leave_start_zone(void) {
     
     BFS_MotionCmd_t cmd1;
     cmd1.type = 0;
-    cmd1.value = 300.0f;
-    cmd1.dir = UP;
+    cmd1.value = 100.0f;
+    cmd1.dir = DOWN;
     motion_queue.cmds[motion_queue.count++] = cmd1;
     
     BFS_MotionCmd_t cmd2;
     cmd2.type = 0;
-    cmd2.value = 200.0f;
+    cmd2.value = 400.0f;
     cmd2.dir = RIGHT;
     motion_queue.cmds[motion_queue.count++] = cmd2;
     
@@ -304,14 +304,14 @@ void return_to_start_zone(void) {
     
     BFS_MotionCmd_t cmd1;
     cmd1.type = 0;
-    cmd1.value = 200.0f;
+    cmd1.value = 400.0f;
     cmd1.dir = LEFT;
     motion_queue.cmds[motion_queue.count++] = cmd1;
     
     BFS_MotionCmd_t cmd2;
     cmd2.type = 0;
-    cmd2.value = 300.0f;
-    cmd2.dir = DOWN;
+    cmd2.value = 100.0f;
+    cmd2.dir = UP;
     motion_queue.cmds[motion_queue.count++] = cmd2;
     
     cmd_index = 0;
