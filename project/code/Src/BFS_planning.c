@@ -38,6 +38,9 @@ static int8_t bomb_y[MAX_BOMBS];
 static uint8_t bomb_count = 0;
 static uint8_t bomb_active[MAX_BOMBS];
 
+// 第2步"直线推炸弹"的最大直线距离（超过此距离该炸弹留给第3步处理）
+#define MAX_LINE_PUSH 5
+
 // ========== 推箱子BFS状态（优化版：轻量状态 + 附属数组） ==========
 #define MAX_PUSH_STATES 28000
 
@@ -106,19 +109,14 @@ static int get_bomb_index(int8_t x, int8_t y) {
 }
 
 void bfs_clear_walls_in_area(int8_t x, int8_t y, int8_t radius) {
+    // 只清除墙：炸弹引爆不会连锁引爆其他炸弹（炸弹只会让自身和墙消失）
     for (int8_t dx = -radius; dx <= radius; dx++) {
         for (int8_t dy = -radius; dy <= radius; dy++) {
             int8_t nx = x + dx;
             int8_t ny = y + dy;
             if (nx <= 0 || nx >= ROWS - 1 || ny <= 0 || ny >= COLS - 1) continue;
-            // 跳过最外围一圈墙，防止车冲出边界
             if (map_data[nx][ny] == CELL_WALL) {
                 map_data[nx][ny] = CELL_FREE;
-            }
-            if (bfs_is_bomb_active(nx, ny)) {
-                if (!(nx == x && ny == y)) {
-                    bfs_trigger_bomb(nx, ny);
-                }
             }
         }
     }
@@ -725,79 +723,62 @@ static uint8_t bfs_can_reach_box_adj(int box_idx, int8_t cx, int8_t cy) {
     return ok;
 }
 
-// 为箱子 box_idx 找最佳炸弹+墙组合
-// 返回：成功=1, out_bi=炸弹索引, out_wx/out_wy=要炸的墙坐标
-// target_x/y: 目标坐标（>=0 时检查推动位，<0 时检查箱子四邻格）
-static int bfs_find_bomb_for_box(int box_idx, int8_t cx, int8_t cy,
-                                  int8_t target_x, int8_t target_y,
+// ========== 炸弹选择核心：找"能走到炸弹旁 + 能推到墙 + 炸墙后 check_pos 可达"的炸弹 ==========
+// check_pos: 需要可达的候选位置（推动位或对象四邻格）
+// 炸弹像箱子一样可被推到任意一面内部墙（不限于自身周围一圈），引爆后清该墙及 radius=1 内墙
+static int bfs_find_bomb_for_wall(int8_t check_pos[4][2], int num_check,
+                                  int8_t cx, int8_t cy,
                                   int *out_bi, int8_t *out_wx, int8_t *out_wy) {
     int best_cost = 9999;
     int found = 0;
     uint8_t save[ROWS][COLS];
     memcpy(save, map_data, sizeof(map_data));
     
-    // 将其他未推箱子视为障碍
-    for (int i = 0; i < box_count; i++) {
-        if (i != box_idx && !box_pushed[i]) map_data[box_x[i]][box_y[i]] = CELL_WALL;
-    }
-    
-    // 计算需要检查的可达位置列表
-    // 有 target 时：推动位（玩家站在哪里才能把箱子往目标方向推）
-    // 无 target 时：箱子四个相邻格（旧行为：识别失败场景）
-    int8_t check_pos[4][2];
-    int num_check = 0;
-    
-    if (target_x >= 0 && target_y >= 0) {
-        int8_t dx = target_x - box_x[box_idx];
-        int8_t dy = target_y - box_y[box_idx];
-        // 推动位 = 箱子另一侧（推上→站在下面，推下→站在上面，以此类推）
-        if (dx != 0) {
-            int8_t px = box_x[box_idx] + (dx > 0 ? -1 : 1);
-            int8_t py = box_y[box_idx];
-            if (px >= 0 && px < ROWS && py >= 0 && py < COLS) {
-                check_pos[num_check][0] = px;
-                check_pos[num_check][1] = py;
-                num_check++;
-            }
-        }
-        if (dy != 0) {
-            int8_t px = box_x[box_idx];
-            int8_t py = box_y[box_idx] + (dy > 0 ? -1 : 1);
-            if (px >= 0 && px < ROWS && py >= 0 && py < COLS) {
-                check_pos[num_check][0] = px;
-                check_pos[num_check][1] = py;
-                num_check++;
-            }
-        }
-    }
-    
-    // 没有 target 或无推动位时回退到箱子四邻格
-    if (num_check == 0) {
-        check_pos[0][0] = box_x[box_idx] - 1; check_pos[0][1] = box_y[box_idx];
-        check_pos[1][0] = box_x[box_idx] + 1; check_pos[1][1] = box_y[box_idx];
-        check_pos[2][0] = box_x[box_idx];     check_pos[2][1] = box_y[box_idx] - 1;
-        check_pos[3][0] = box_x[box_idx];     check_pos[3][1] = box_y[box_idx] + 1;
-        num_check = 4;
-    }
-    
     for (int bi = 0; bi < bomb_count; bi++) {
         if (!bomb_active[bi]) continue;
         
-        // 炸弹本身在 map_data 中是 FREE，手动标记为障碍以便寻路
-        map_data[bomb_x[bi]][bomb_y[bi]] = CELL_WALL;
+        // 玩家必须先能走到炸弹旁（否则无法推它）
+        int8_t adj_x, adj_y;
+        if (!find_recog_position(bomb_x[bi], bomb_y[bi], cx, cy, &adj_x, &adj_y)) continue;
+        int8_t to_bomb_acts[ROWS * COLS];
+        int to_bomb_len = 0;
+        if (!bfs_find_path(cx, cy, adj_x, adj_y, to_bomb_acts, &to_bomb_len)) continue;
         
-        // 遍历炸弹周围 radius=1 内的墙
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 1; dy++) {
-                if (dx == 0 && dy == 0) continue;
-                int8_t wx = bomb_x[bi] + dx;
-                int8_t wy = bomb_y[bi] + dy;
-                if (wx < 0 || wx >= ROWS || wy < 0 || wy >= COLS) continue;
-                if (wx == 0 || wx == ROWS - 1 || wy == 0 || wy == COLS - 1) continue; // 跳过最外围墙
+        // 遍历所有内部墙作为引爆点（炸弹可被推到任意墙）
+        for (int wx = 1; wx < ROWS - 1; wx++) {
+            for (int wy = 1; wy < COLS - 1; wy++) {
                 if (save[wx][wy] != CELL_WALL) continue; // 必须是原来的墙
+                if (wx == bomb_x[bi] && wy == bomb_y[bi]) continue;
                 
-                // 临时清除这面墙，看箱子是否可达
+                // dry-run 1：验证炸弹能否被推到该墙（临时清墙 + 炸弹不挡路）
                 map_data[wx][wy] = CELL_FREE;
+                bomb_active[bi] = 0;
+                int8_t end_px, end_py;
+                int8_t push_acts[ROWS * COLS * 2];
+                int push_alen = 0;
+                int8_t push_dirs[ROWS * COLS];
+                int push_plen = 0;
+                int pushable = bfs_plan_push(adj_x, adj_y,
+                                             bomb_x[bi], bomb_y[bi],
+                                             wx, wy, 0, NULL,
+                                             push_acts, &push_alen, push_dirs, &push_plen,
+                                             &end_px, &end_py);
+                map_data[wx][wy] = CELL_WALL;
+                bomb_active[bi] = 1;
+                if (!pushable) continue;
+                
+                // dry-run 2：模拟引爆（炸弹消失 + 清引爆点及 radius=1 内墙）后检查可达
+                memcpy(map_data, save, sizeof(map_data));
+                map_data[bomb_x[bi]][bomb_y[bi]] = CELL_FREE;
+                bomb_active[bi] = 0;
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        int8_t nx = wx + dx;
+                        int8_t ny = wy + dy;
+                        if (nx <= 0 || nx >= ROWS - 1 || ny <= 0 || ny >= COLS - 1) continue;
+                        if (map_data[nx][ny] == CELL_WALL) map_data[nx][ny] = CELL_FREE;
+                    }
+                }
                 
                 uint8_t reachable = 0;
                 for (int c = 0; c < num_check; c++) {
@@ -805,19 +786,20 @@ static int bfs_find_bomb_for_box(int box_idx, int8_t cx, int8_t cy,
                     int8_t ny = check_pos[c][1];
                     if (nx < 0 || nx >= ROWS || ny < 0 || ny >= COLS) continue;
                     if (map_data[nx][ny] == CELL_WALL) continue;
-                    
                     int8_t acts[ROWS * COLS];
                     int alen = 0;
-                    if (bfs_find_path(cx, cy, nx, ny, acts, &alen)) {
+                    if (bfs_find_path(end_px, end_py, nx, ny, acts, &alen)) {
                         reachable = 1;
                         break;
                     }
                 }
-                map_data[wx][wy] = CELL_WALL;
+                
+                // 恢复状态，供下一个候选墙 dry-run 使用
+                memcpy(map_data, save, sizeof(map_data));
+                bomb_active[bi] = 1;
                 
                 if (reachable) {
-                    int cost = abs(cx - bomb_x[bi]) + abs(cy - bomb_y[bi])
-                             + abs(bomb_x[bi] - wx) + abs(bomb_y[bi] - wy);
+                    int cost = to_bomb_len + push_alen;
                     if (cost < best_cost) {
                         best_cost = cost;
                         *out_bi = bi;
@@ -828,11 +810,111 @@ static int bfs_find_bomb_for_box(int box_idx, int8_t cx, int8_t cy,
                 }
             }
         }
-        map_data[bomb_x[bi]][bomb_y[bi]] = CELL_FREE;
     }
-    
     memcpy(map_data, save, sizeof(map_data));
     return found;
+}
+
+// 为箱子 box_idx 找最佳炸弹+墙组合（推送阶段）
+// 判据：炸掉某墙后，箱子能被真正推到目标（dry-run 推箱子）
+static int bfs_find_bomb_for_box(int box_idx, int8_t cx, int8_t cy,
+                                  int8_t target_x, int8_t target_y,
+                                  int *out_bi, int8_t *out_wx, int8_t *out_wy) {
+    int best_cost = 9999;
+    int found = 0;
+    uint8_t save[ROWS][COLS];
+    memcpy(save, map_data, sizeof(map_data));
+    
+    for (int bi = 0; bi < bomb_count; bi++) {
+        if (!bomb_active[bi]) continue;
+        
+        // 玩家必须先能走到炸弹旁（否则无法推它）
+        int8_t adj_x, adj_y;
+        if (!find_recog_position(bomb_x[bi], bomb_y[bi], cx, cy, &adj_x, &adj_y)) continue;
+        int8_t to_bomb_acts[ROWS * COLS];
+        int to_bomb_len = 0;
+        if (!bfs_find_path(cx, cy, adj_x, adj_y, to_bomb_acts, &to_bomb_len)) continue;
+        
+        // 遍历所有内部墙作为引爆点（炸弹可被推到任意墙）
+        for (int wx = 1; wx < ROWS - 1; wx++) {
+            for (int wy = 1; wy < COLS - 1; wy++) {
+                if (save[wx][wy] != CELL_WALL) continue; // 必须是原来的墙
+                if (wx == bomb_x[bi] && wy == bomb_y[bi]) continue;
+                
+                // dry-run 1：验证炸弹能否被推到该墙
+                map_data[wx][wy] = CELL_FREE;
+                bomb_active[bi] = 0;
+                int8_t end_px, end_py;
+                int8_t push_acts[ROWS * COLS * 2];
+                int push_alen = 0;
+                int8_t push_dirs[ROWS * COLS];
+                int push_plen = 0;
+                int pushable = bfs_plan_push(adj_x, adj_y,
+                                             bomb_x[bi], bomb_y[bi],
+                                             wx, wy, 0, NULL,
+                                             push_acts, &push_alen, push_dirs, &push_plen,
+                                             &end_px, &end_py);
+                map_data[wx][wy] = CELL_WALL;
+                bomb_active[bi] = 1;
+                if (!pushable) continue;
+                
+                // dry-run 2：模拟引爆（炸弹消失 + 清引爆点及 radius=1 内墙），箱子能否推到目标
+                memcpy(map_data, save, sizeof(map_data));
+                map_data[bomb_x[bi]][bomb_y[bi]] = CELL_FREE;
+                bomb_active[bi] = 0;
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dy = -1; dy <= 1; dy++) {
+                        int8_t nx = wx + dx;
+                        int8_t ny = wy + dy;
+                        if (nx <= 0 || nx >= ROWS - 1 || ny <= 0 || ny >= COLS - 1) continue;
+                        if (map_data[nx][ny] == CELL_WALL) map_data[nx][ny] = CELL_FREE;
+                    }
+                }
+                
+                int8_t box_end_px, box_end_py;
+                int8_t box_acts[ROWS * COLS * 2];
+                int box_alen = 0;
+                int8_t box_push_dirs[ROWS * COLS];
+                int box_push_len = 0;
+                int box_ok = bfs_plan_push(end_px, end_py,
+                                           box_x[box_idx], box_y[box_idx],
+                                           target_x, target_y,
+                                           0, NULL,
+                                           box_acts, &box_alen, box_push_dirs, &box_push_len,
+                                           &box_end_px, &box_end_py);
+                
+                // 恢复状态，供下一个候选墙 dry-run 使用
+                memcpy(map_data, save, sizeof(map_data));
+                bomb_active[bi] = 1;
+                
+                if (box_ok) {
+                    int cost = to_bomb_len + push_alen;
+                    if (cost < best_cost) {
+                        best_cost = cost;
+                        *out_bi = bi;
+                        *out_wx = wx;
+                        *out_wy = wy;
+                        found = 1;
+                    }
+                }
+            }
+        }
+    }
+    memcpy(map_data, save, sizeof(map_data));
+    return found;
+}
+
+// ========== 为识别阶段找可引爆的炸弹开路 ==========
+// 识别对象四邻格被炸弹/墙挡住时，找"能走到炸弹旁 + 能推到墙 + 炸墙后四邻格可达"的炸弹
+static int bfs_find_bomb_for_recog(int8_t obj_x, int8_t obj_y, int8_t cx, int8_t cy,
+                                   int *out_bi, int8_t *out_wx, int8_t *out_wy) {
+    int8_t check_pos[4][2] = {
+        {obj_x - 1, obj_y},
+        {obj_x + 1, obj_y},
+        {obj_x, obj_y - 1},
+        {obj_x, obj_y + 1}
+    };
+    return bfs_find_bomb_for_wall(check_pos, 4, cx, cy, out_bi, out_wx, out_wy);
 }
 
 static uint8_t bfs_execute_bomb(int bomb_idx, int8_t wx, int8_t wy,
@@ -897,6 +979,157 @@ static uint8_t bfs_execute_bomb(int bomb_idx, int8_t wx, int8_t wy,
     return 1;
 }
 
+// ========== 第2步：直线推炸弹到最近墙（帮助度优先） ==========
+// ========== 第2步：直线推炸弹（帮助度优先，距离次要） ==========
+// 枚举炸弹 bi 沿上/下/左/右直线扫到的最近墙（路径无障碍、距离<=MAX_LINE_PUSH）。
+// 直线可推要求：炸弹行进方向反方向的推动位必须可达（界内且非墙/箱子/炸弹）。
+// 填入 walls[][2] 与对应直线距离 dists[]，返回候选墙个数。
+static int bfs_line_walls(int bi, int8_t walls[4][2], int dists[4]) {
+    int8_t dirs[4][2] = {{-1,0},{1,0},{0,-1},{0,1}};
+    int n = 0;
+    for (int d = 0; d < 4; d++) {
+        int8_t dx = dirs[d][0], dy = dirs[d][1];
+        // 推动位 = 炸弹后方一格（玩家站立推的位置）
+        int8_t px = bomb_x[bi] - dx, py = bomb_y[bi] - dy;
+        if (px < 0 || px >= ROWS || py < 0 || py >= COLS) continue;
+        if (is_position_blocked(px, py)) continue;   // 推动位不可达
+        int8_t nx = bomb_x[bi] + dx, ny = bomb_y[bi] + dy;
+        int dist = 1;
+        while (nx > 0 && nx < ROWS - 1 && ny > 0 && ny < COLS - 1) {
+            if (map_data[nx][ny] == CELL_WALL) {
+                walls[n][0] = nx; walls[n][1] = ny; dists[n] = dist;
+                n++;
+                break;
+            }
+            if (is_position_blocked(nx, ny)) break;   // 路径上有箱子/炸弹挡
+            if (dist >= MAX_LINE_PUSH) break;
+            nx += dx; ny += dy; dist++;
+        }
+    }
+    return n;
+}
+
+// 统计当前地图下，能推到自己匹配目标（box id==target id）的箱子数。
+// 对每个箱子，从它的四邻格（推动位）中任一空地出发 dry-run 推箱子到目标，
+// 只要存在一个推动位能推到目标，就认为该箱子"通道已打通"。
+static int bfs_pushable_box_count(void) {
+    int cnt = 0;
+    int8_t dirs4[4][2] = {{-1,0},{1,0},{0,-1},{0,1}};
+    for (int b = 0; b < box_count; b++) {
+        if (box_pushed[b]) continue;
+        int t = bfs_match_box_to_target(b);
+        if (t < 0) continue;
+        int ok = 0;
+        for (int d = 0; d < 4 && !ok; d++) {
+            int8_t px = box_x[b] + dirs4[d][0];
+            int8_t py = box_y[b] + dirs4[d][1];
+            if (px < 0 || px >= ROWS || py < 0 || py >= COLS) continue;
+            if (is_position_blocked(px, py)) continue;
+            int8_t acts[ROWS * COLS * 2]; int alen = 0;
+            int8_t pdirs[ROWS * COLS]; int plen = 0;
+            int8_t epx, epy;
+            if (bfs_plan_push(px, py, box_x[b], box_y[b],
+                              target_x[t], target_y[t], 0, NULL,
+                              acts, &alen, pdirs, &plen, &epx, &epy)) ok = 1;
+        }
+        if (ok) cnt++;
+    }
+    return cnt;
+}
+
+// 当前有多少激活炸弹"可直线推"（至少能扫到一面可达墙）
+static int bfs_pushable_bomb_count(void) {
+    int cnt = 0;
+    for (int bi = 0; bi < bomb_count; bi++) {
+        if (!bomb_active[bi]) continue;
+        int8_t walls[4][2]; int dists[4];
+        if (bfs_line_walls(bi, walls, dists) > 0) cnt++;
+    }
+    return cnt;
+}
+
+// 引爆炸弹 bi（推到墙 sx,sy）后，"可推箱子数 + 可直线推炸弹数"的总效益。
+// 模拟：炸弹 bi 消失（不再挡路/不再参与统计），并清 (sx,sy) radius=1 内墙。
+static int bfs_line_benefit(int bi, int sx, int sy) {
+    uint8_t save_map[ROWS][COLS];
+    memcpy(save_map, map_data, sizeof(map_data));
+    uint8_t save_active = bomb_active[bi];
+    // 炸弹引爆后消失
+    bomb_active[bi] = 0;
+    map_data[bomb_x[bi]][bomb_y[bi]] = CELL_FREE;
+    for (int dx = -1; dx <= 1; dx++)
+        for (int dy = -1; dy <= 1; dy++) {
+            int8_t nx = sx + dx, ny = sy + dy;
+            if (nx <= 0 || nx >= ROWS - 1 || ny <= 0 || ny >= COLS - 1) continue;
+            if (map_data[nx][ny] == CELL_WALL) map_data[nx][ny] = CELL_FREE;
+        }
+    int v = bfs_pushable_box_count() + bfs_pushable_bomb_count();
+    memcpy(map_data, save_map, sizeof(map_data));
+    bomb_active[bi] = save_active;
+    return v;
+}
+
+// 第2步：贪心引爆所有"可直线推(距离<=MAX_LINE_PUSH)"的炸弹。
+// 选墙：优先"引爆后(可推箱子数+可直线推炸弹数)最大"，距离作次要；允许引爆协同前置(step 帮助度>=0)。
+// 反复直到没有可直线推的炸弹或无可引爆。
+static uint8_t bfs_explode_line_bombs(BFS_MotionQueue_t *mq, int8_t *cur_px, int8_t *cur_py) {
+    uint8_t exploded_any = 0;
+    for (int iter = 0; iter < MAX_BOMBS * 2; iter++) {  // 最多引爆全部炸弹
+        int best_bi = -1, best_wx = 0, best_wy = 0;
+        int best_benefit = 0, best_dist = MAX_LINE_PUSH + 1;
+        uint8_t save_map[ROWS][COLS];
+        memcpy(save_map, map_data, sizeof(map_data));
+        for (int bi = 0; bi < bomb_count; bi++) {
+            if (!bomb_active[bi]) continue;
+            int8_t walls[4][2]; int dists[4];
+            int nw = bfs_line_walls(bi, walls, dists);
+            for (int k = 0; k < nw; k++) {
+                int wx = walls[k][0], wy = walls[k][1];
+                int benefit = bfs_line_benefit(bi, wx, wy);
+                if (benefit > best_benefit || (benefit == best_benefit && dists[k] < best_dist)) {
+                    best_benefit = benefit; best_dist = dists[k];
+                    best_bi = bi; best_wx = wx; best_wy = wy;
+                }
+            }
+        }
+        if (best_bi < 0) break;  // 没有可直线推的炸弹，结束第2步
+        if (!bfs_execute_bomb(best_bi, best_wx, best_wy, mq, cur_px, cur_py)) {
+            // 该炸弹实际推不动（如推动位被墙），标记失效避免死循环
+            bomb_active[best_bi] = 0;
+            continue;
+        }
+        exploded_any = 1;
+    }
+    return exploded_any;
+}
+
+// ========== 识别（被挡时用炸弹开路重试） ==========
+// 先直接尝试走到识别位识别；若被炸弹/墙挡住，逐个引爆可用炸弹开路后重试
+static uint8_t move_to_recog_with_bomb(int8_t obj_x, int8_t obj_y, uint8_t phase, int8_t obj_idx,
+                                       BFS_MotionQueue_t *mq, int8_t *cur_px, int8_t *cur_py) {
+    // 1. 先直接尝试识别
+    if (move_to_recog(obj_x, obj_y, phase, obj_idx, mq, cur_px, cur_py)) {
+        return 1;
+    }
+    
+    // 2. 被挡路：逐个引爆可用炸弹开路，再重试识别
+    while (1) {
+        int bi;
+        int8_t wx, wy;
+        if (!bfs_find_bomb_for_recog(obj_x, obj_y, *cur_px, *cur_py, &bi, &wx, &wy)) {
+            return 0; // 没有可用炸弹
+        }
+        if (!bfs_execute_bomb(bi, wx, wy, mq, cur_px, cur_py)) {
+            bomb_active[bi] = 0; // 该炸弹无法执行，标记失效，避免死循环
+            continue;
+        }
+        if (move_to_recog(obj_x, obj_y, phase, obj_idx, mq, cur_px, cur_py)) {
+            return 1;
+        }
+        // 炸完仍被挡，继续找下一个炸弹
+    }
+}
+
 /* ============================================================================
  * 识别阶段（第2/3关专用，在推送规划之前单独执行）
  * 真正的 2n-1 优化：识别所有目标 + 识别前 n-1 个箱子
@@ -909,12 +1142,12 @@ void bfs_plan_recognize(BFS_MotionQueue_t *mq) {
     
     // 识别所有目标 (n 个)
     for (int i = 0; i < target_count; i++) {
-        move_to_recog(target_x[i], target_y[i], 1, i, mq, &cur_px, &cur_py);
+        move_to_recog_with_bomb(target_x[i], target_y[i], 1, i, mq, &cur_px, &cur_py);
     }
     
     // 只识别前 n-1 个箱子（最后一个箱子不需要识别）
     for (int i = 0; i < box_count - 1; i++) {
-        move_to_recog(box_x[i], box_y[i], 2, i, mq, &cur_px, &cur_py);
+        move_to_recog_with_bomb(box_x[i], box_y[i], 2, i, mq, &cur_px, &cur_py);
     }
     
     // 识别结束位置作为推送阶段起点
@@ -939,6 +1172,12 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
     
     int8_t cur_px = g_start_px;
     int8_t cur_py = g_start_py;
+    
+    // 第2步：推送开始前，先贪心引爆所有"可直线推(距离<=MAX_LINE_PUSH)"的炸弹
+    // （这些炸弹沿直线推到最近的墙引爆，清掉沿途障碍；用不完的炸弹留给第3步）
+    if (has_bomb) {
+        bfs_explode_line_bombs(mq, &cur_px, &cur_py);
+    }
     
     // 先推送前 n-1 个箱子（索引 0 到 box_count-2）
     for (int i = 0; i < box_count - 1; i++) {
@@ -994,6 +1233,7 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
                     break;  // 没有更多可用炸弹
                 }
                 if (!bfs_execute_bomb(bi, wx, wy, mq, &cur_px, &cur_py)) {
+                    bomb_active[bi] = 0;  // 该炸弹无法执行，标记失效，避免死循环
                     continue;  // 炸弹执行失败，尝试下一个
                 }
                 
@@ -1069,6 +1309,7 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
                     break;
                 }
                 if (!bfs_execute_bomb(bi, wx, wy, mq, &cur_px, &cur_py)) {
+                    bomb_active[bi] = 0;  // 该炸弹无法执行，标记失效，避免死循环
                     continue;
                 }
                 
@@ -1091,8 +1332,8 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
             }
         }
     }
-
-		// 检查是否所有目标都已完成
+    
+    // 检查是否所有目标都已完成
     uint8_t all_matched = 1;
     for (int t = 0; t < target_count; t++) {
         if (!target_matched[t]) {
@@ -1107,7 +1348,7 @@ uint8_t bfs_plan_stage23(BFS_MotionQueue_t *mq, uint8_t has_bomb) {
         mq->found = 1;
         return 1;
     }
-		
+    
     return 0;
 }
 
@@ -1199,7 +1440,7 @@ void bfs_load_map(uint8_t data[ROWS][COLS]) {
         for (int j = 0; j < COLS; j++) {
             if (i == 6 && j == 2) {
                 origin_px = i;
-                origin_py = j;  // 硬编码实际起点为（6，2） 因为出发车区才会刷新出地图 （6，2）确保离开了发车区
+                origin_py = j; // 硬编码实际起点为（6，2） 因为出发车区才会刷新出地图 （6，2）确保离开了发车区
             } else if (data[i][j] == CELL_BOX && box_count < MAX_BOX) {
                 box_x[box_count] = i;
                 box_y[box_count] = j;

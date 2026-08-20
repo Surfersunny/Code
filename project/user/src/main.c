@@ -31,7 +31,7 @@ extern float vision_x;
 extern float vision_y;
 
 // ========== 本地全局变量 ==========
-uint8_t current_stage = STAGE_1;
+uint8_t current_stage = STAGE_3;
 uint8_t all_done = 0;
 uint8_t success = 0;
 uint8_t is_initialized = 0;
@@ -236,7 +236,7 @@ void pit_handler(void) {
     }
 }
 
-// ========== 离开发车区（不做纠偏 防止往左纠出场地） ==========
+// ========== 离开发车区（不做纠偏） ==========
 void leave_start_zone(void) {
     memset(&motion_queue, 0, sizeof(BFS_MotionQueue_t));
     
@@ -298,7 +298,7 @@ void leave_start_zone(void) {
 	}
 }
 
-// ========== 回到发车区（做纠偏） ==========
+// ========== 回到发车区（不做纠偏） ==========
 void return_to_start_zone(void) {
     memset(&motion_queue, 0, sizeof(BFS_MotionQueue_t));
     
