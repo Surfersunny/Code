@@ -305,8 +305,14 @@ void return_to_start_zone(void) {
     BFS_MotionCmd_t cmd1;
     cmd1.type = 0;
     cmd1.value = 200.0f;
-    cmd1.dir = DOWN;
+    cmd1.dir = LEFT;
     motion_queue.cmds[motion_queue.count++] = cmd1;
+    
+    BFS_MotionCmd_t cmd2;
+    cmd2.type = 0;
+    cmd2.value = 300.0f;
+    cmd2.dir = DOWN;
+    motion_queue.cmds[motion_queue.count++] = cmd2;
     
     cmd_index = 0;
     sequence_running = 1;
