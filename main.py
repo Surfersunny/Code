@@ -159,9 +159,9 @@ def recognize_map():
         row = i // MAP_COLS
         col = i % MAP_COLS
         result_array[row][col] = classify_grid(map_region, roi)
-    # 固定第二行(row=1)的第7、8列(col=6,7)识别的格子为 0，无论识别到什么
-    result_array[1][6] = 0
-    result_array[1][7] = 0
+    # 固定 (row=1,col=5) 与 (row=2,col=5) 识别的格子为 0，无论识别到什么
+    result_array[1][5] = 0
+    result_array[2][5] = 0
     packet = pack_result(result_array)
     _log_map(result_array)
     green_light.toggle()
@@ -235,7 +235,7 @@ def _log_map(result_array):
         f.write("----\n")
 def recognize_digit():
     _ensure_model('digit')
-    time.sleep_ms(200)
+    #time.sleep_ms(200)
     blue_light.on()
     idx = _classify_vote(_digit_net, _digit_labels)
     print("Digit voted: idx=%d" % idx)
@@ -245,7 +245,7 @@ def recognize_digit():
     return bytes([idx])
 def recognize_box():
     _ensure_model('box')
-    time.sleep_ms(200)
+    #time.sleep_ms(200)
     blue_light.on()
     idx = _classify_vote(_box_net, _box_labels)
     print("Box voted: idx=%d" % idx)

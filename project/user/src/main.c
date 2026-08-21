@@ -31,7 +31,7 @@ extern float vision_x;
 extern float vision_y;
 
 // ========== 本地全局变量 ==========
-uint8_t current_stage = STAGE_3;
+uint8_t current_stage = STAGE_1;
 uint8_t all_done = 0;
 uint8_t success = 0;
 uint8_t is_initialized = 0;
@@ -130,12 +130,12 @@ void execute_motion_cmd(BFS_MotionCmd_t *cmd) {
         if (phase == 1) {
             recog_target_idx = cmd->idx;
             recog_total = bfs_get_target_count();
-            system_delay_ms(1000);
+            //system_delay_ms(1000);
             send_cmd('t');
         } else {
             recog_box_idx = cmd->idx;
             recog_total = bfs_get_box_count();
-            system_delay_ms(1000);
+            //system_delay_ms(1000);
             send_cmd('b');
         }
 
